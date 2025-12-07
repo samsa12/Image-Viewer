@@ -35,6 +35,12 @@ the renderer tracks zoom level and pan offset separately.
 when you zoom with the scroll wheel, it zooms centered on your cursor position.
 when you drag, it just updates the pan offset.
 
+theres caching infrastructure for scaled bitmaps now:
+- hScaledBitmap and hScaledDC hold pre-scaled versions
+- cachedScale tracks what zoom level was cached
+- helps avoid recomputing scaled images on every pan
+- init and cleanup handle the cache memory properly
+
 
 file browsing
 -------------
@@ -86,6 +92,20 @@ set as wallpaper uses SystemParametersInfo with SPI_SETDESKWALLPAPER.
 delete uses SHFileOperation with FOF_ALLOWUNDO to send to recycle bin.
 copy to clipboard creates a dib and puts it on the clipboard.
 print uses the standard print dialog and StretchDIBits to the printer dc.
+
+
+code structure
+--------------
+
+the code is split into modules:
+- main.c - window, input handling, ui drawing
+- image_loader.c/.h - loading, editing, undo
+- renderer.c/.h - bitmap creation, scaling, painting
+- file_browser.c/.h - folder scanning, navigation
+- app_state.h - shared globals for cross-file access
+
+globals that need to be accessed across files are declared extern in app_state.h.
+the actual definitions live in main.c.
 
 
 thats pretty much it. simple program, does what it says.
