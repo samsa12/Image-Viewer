@@ -44,6 +44,7 @@ echo Compiling with GCC...
 gcc -O2 -Wall -mwindows ^
     -o ImageViewer.exe ^
     src/main.c src/image_loader.c src/renderer.c src/file_browser.c ^
+    resource.o ^
     -I lib ^
     -lgdi32 -lshell32 -lcomdlg32
 if %ERRORLEVEL% NEQ 0 goto :error

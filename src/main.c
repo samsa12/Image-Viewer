@@ -46,39 +46,39 @@
 #define SLIDESHOW_MIN_INTERVAL 500
 #define SLIDESHOW_MAX_INTERVAL 30000
 
-// Global state
-static ImageData g_image = {0};
-static Renderer g_renderer = {0};
-static FileBrowser g_browser = {0};
-static BOOL g_fullscreen = FALSE;
+// Global state (shared via app_state.h)
+ImageData g_image = {0};
+Renderer g_renderer = {0};
+FileBrowser g_browser = {0};
+BOOL g_fullscreen = FALSE;
 static WINDOWPLACEMENT g_prevPlacement = {sizeof(g_prevPlacement)};
 
-// Panning state
+// Panning state (local to this file)
 static BOOL g_isPanning = FALSE;
 static int g_panStartX = 0;
 static int g_panStartY = 0;
 static int g_offsetStartX = 0;
 static int g_offsetStartY = 0;
 
-// Slideshow state
-static BOOL g_slideshowActive = FALSE;
-static int g_slideshowInterval = 3000; // 3 seconds default
-static DWORD g_slideshowStartTime = 0;
+// Slideshow state (shared)
+BOOL g_slideshowActive = FALSE;
+int g_slideshowInterval = 3000; // 3 seconds default
+DWORD g_slideshowStartTime = 0;
 
-// UI state
-static BOOL g_showInfo = FALSE;
-static BOOL g_darkTheme = TRUE;
-static BOOL g_showThumbnails = FALSE;
-static BOOL g_showStatusBar = TRUE;
-static BOOL g_showEditPanel = FALSE;
+// UI state (shared)
+BOOL g_showInfo = FALSE;
+BOOL g_darkTheme = TRUE;
+BOOL g_showThumbnails = FALSE;
+BOOL g_showStatusBar = TRUE;
+BOOL g_showEditPanel = FALSE;
 
-// Edit mode state
-static int g_editBrightness = 0;      // -100 to +100
-static float g_editContrast = 1.0f;   // 0.5 to 2.0
-static float g_editSaturation = 1.0f; // 0.0 to 2.0
-static int g_editSelection = 0;       // 0=brightness, 1=contrast, 2=saturation
+// Edit mode state (shared)
+int g_editBrightness = 0;      // -100 to +100
+float g_editContrast = 1.0f;   // 0.5 to 2.0
+float g_editSaturation = 1.0f; // 0.0 to 2.0
+int g_editSelection = 0;       // 0=brightness, 1=contrast, 2=saturation
 
-// UI constants
+// UI constants (now in app_state.h)
 #define THUMB_SIZE 80
 #define THUMB_PADDING 5
 #define THUMB_STRIP_HEIGHT (THUMB_SIZE + THUMB_PADDING * 2)
@@ -86,12 +86,12 @@ static int g_editSelection = 0;       // 0=brightness, 1=contrast, 2=saturation
 #define SHADOW_SIZE 8
 #define EDIT_PANEL_WIDTH 200
 
-// Modern theme colors
-static COLORREF g_bgColor = RGB(18, 18, 18);        // Darker background
-static COLORREF g_textColor = RGB(220, 220, 220);   // Brighter text
-static COLORREF g_panelBgColor = RGB(28, 28, 30);   // Subtle panel
-static COLORREF g_accentColor = RGB(70, 130, 180);  // Steel blue accent
-static COLORREF g_statusBarColor = RGB(24, 24, 26); // Status bar bg
+// Modern theme colors (shared)
+COLORREF g_bgColor = RGB(18, 18, 18);        // Darker background
+COLORREF g_textColor = RGB(220, 220, 220);   // Brighter text
+COLORREF g_panelBgColor = RGB(28, 28, 30);   // Subtle panel
+COLORREF g_accentColor = RGB(70, 130, 180);  // Steel blue accent
+COLORREF g_statusBarColor = RGB(24, 24, 26); // Status bar bg
 
 // Thumbnail cache (unused for now)
 #define THUMB_CACHE_SIZE 50
