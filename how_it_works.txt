@@ -55,6 +55,12 @@ saturation converts to hsl, adjusts s, converts back.
 rotate/flip operations reallocate the pixel buffer and rearrange data.
 crop just creates a new smaller buffer with the selected region.
 
+theres an undo system now:
+- original image is kept in memory when you load
+- before each destructive edit, current state is saved
+- ctrl+z swaps between current and previous state
+- works like a toggle, press again to redo
+
 when you save, it writes out a bmp file since thats simple to encode.
 
 
@@ -62,7 +68,7 @@ themes
 ------
 
 just swaps the color variables used for drawing backgrounds and text.
-dark theme is default because its 2024 and we have standards.
+dark theme is default because its 2025 and we have standards.
 
 
 slideshow
