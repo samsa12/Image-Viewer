@@ -135,8 +135,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
   wc.hCursor = LoadCursor(NULL, IDC_ARROW);
   wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
   wc.lpszClassName = WINDOW_CLASS;
-  wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-  wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+  // load custom icon from resources
+  wc.hIcon = LoadIconA(hInstance, "IDI_ICON1");
+  wc.hIconSm = LoadIconA(hInstance, "IDI_ICON1");
+  // fallback to default if custom icon not found
+  if (!wc.hIcon)
+    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+  if (!wc.hIconSm)
+    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
 
   if (!RegisterClassExA(&wc)) {
     MessageBoxA(NULL, "Failed to register window class", "Error", MB_ICONERROR);
@@ -868,20 +874,30 @@ void DrawSlideshowProgress(HDC hdc, RECT *clientRect) {
   if (progress > 1.0f)
     progress = 1.0f;
 
-  // Draw progress bar at top
-  int barHeight = 3;
+  // draw progress bar at top - slightly thicker and with glow
+  int barHeight = 4;
   int barWidth = (int)(clientRect->right * progress);
 
-  RECT progressRect = {0, 0, barWidth, barHeight};
-  HBRUSH progressBrush = CreateSolidBrush(g_accentColor);
-  FillRect(hdc, &progressRect, progressBrush);
-  DeleteObject(progressBrush);
+  // background track
+  RECT trackRect = {0, 0, clientRect->right, barHeight};
+  HBRUSH trackBrush = CreateSolidBrush(RGB(50, 50, 55));
+  FillRect(hdc, &trackRect, trackBrush);
+  DeleteObject(trackBrush);
 
-  // Draw remaining part
-  RECT remainRect = {barWidth, 0, clientRect->right, barHeight};
-  HBRUSH remainBrush = CreateSolidBrush(RGB(40, 40, 40));
-  FillRect(hdc, &remainRect, remainBrush);
-  DeleteObject(remainBrush);
+  // progress fill with gradient-like effect
+  if (barWidth > 0) {
+    // main bar
+    RECT progressRect = {0, 0, barWidth, barHeight};
+    HBRUSH progressBrush = CreateSolidBrush(g_accentColor);
+    FillRect(hdc, &progressRect, progressBrush);
+    DeleteObject(progressBrush);
+
+    // subtle highlight on top edge
+    RECT highlightRect = {0, 0, barWidth, 1};
+    HBRUSH highlightBrush = CreateSolidBrush(RGB(120, 170, 210));
+    FillRect(hdc, &highlightRect, highlightBrush);
+    DeleteObject(highlightBrush);
+  }
 }
 
 void DrawEditPanel(HDC hdc, RECT *clientRect) {
