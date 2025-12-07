@@ -1,7 +1,5 @@
-/*
- * Renderer - Header
- * Pure C Image Viewer
- */
+// renderer header
+// handles drawing images to screen with zoom/pan
 
 #ifndef RENDERER_H
 #define RENDERER_H
@@ -10,7 +8,7 @@
 #include <windows.h>
 
 
-// Renderer state
+// main renderer state
 typedef struct {
   HBITMAP hBitmap;
   HDC hMemDC;
@@ -21,7 +19,7 @@ typedef struct {
   int offsetY;
   BOOL fitToWindow;
 
-  // Cached scaled bitmap for smooth panning
+  // cached scaled bitmap for smooth panning
   HBITMAP hScaledBitmap;
   HDC hScaledDC;
   float cachedScale;
@@ -29,7 +27,7 @@ typedef struct {
   int cachedHeight;
 } Renderer;
 
-// Function declarations
+// functions
 void Renderer_Init(Renderer *renderer);
 void Renderer_Cleanup(Renderer *renderer);
 void Renderer_CreateBitmap(Renderer *renderer, HDC hdc, const ImageData *image);
@@ -41,4 +39,4 @@ void Renderer_SetScale(Renderer *renderer, float scale);
 void Renderer_CenterImage(Renderer *renderer, RECT *clientRect,
                           const ImageData *image);
 
-#endif // RENDERER_H
+#endif

@@ -1,7 +1,5 @@
-/*
- * Image Loader - Header
- * Pure C Image Viewer
- */
+// image loader header
+// handles loading images, editing, and undo
 
 #ifndef IMAGE_LOADER_H
 #define IMAGE_LOADER_H
@@ -9,44 +7,48 @@
 #include <stdio.h>
 #include <windows.h>
 
-// Maximum GIF frames to support
+// gif stuff
 #define MAX_GIF_FRAMES 500
 
-// Image data structure
+// main image data struct
 typedef struct {
-  unsigned char *pixels;   // Current frame RGBA pixel data
-  unsigned char *original; // Original pixels from disk (for reset)
-  unsigned char *undo;     // Previous state (for undo)
+  unsigned char *pixels;   // current frame rgba data
+  unsigned char *original; // original from disk for reset
+  unsigned char *undo;     // previous state for ctrl+z
   int width;
   int height;
   int channels;
   char filepath[MAX_PATH];
 
-  // Animation data (for GIFs)
+  // gif animation
   int isAnimated;
   int frameCount;
   int currentFrame;
-  int *frameDelays;       // Delay for each frame in milliseconds
-  unsigned char **frames; // Array of frame pixel data
+  int *frameDelays;       // delay per frame in ms
+  unsigned char **frames; // frame pixel data array
 } ImageData;
 
-// Function declarations
+// loading
 int ImageLoader_Load(const char *filepath, ImageData *image);
 void ImageLoader_Free(ImageData *image);
 const char *ImageLoader_GetError(void);
+
+// transforms
 void ImageLoader_RotateRight(ImageData *image);
 void ImageLoader_RotateLeft(ImageData *image);
 void ImageLoader_FlipHorizontal(ImageData *image);
 void ImageLoader_FlipVertical(ImageData *image);
+
+// gif animation
 int ImageLoader_NextFrame(ImageData *image);
 int ImageLoader_GetFrameDelay(ImageData *image);
 
-// Undo/Reset functions
+// undo system
 void ImageLoader_SaveUndo(ImageData *image);
 int ImageLoader_Undo(ImageData *image);
 int ImageLoader_Reset(ImageData *image);
 
-// Editing functions
+// editing
 void ImageLoader_AdjustBrightness(ImageData *image, int delta);
 void ImageLoader_AdjustContrast(ImageData *image, float factor);
 void ImageLoader_AdjustSaturation(ImageData *image, float factor);
@@ -59,4 +61,4 @@ void ImageLoader_Blur(ImageData *image);
 void ImageLoader_AutoLevels(ImageData *image);
 void ImageLoader_Sepia(ImageData *image);
 
-#endif // IMAGE_LOADER_H
+#endif

@@ -1,7 +1,5 @@
-/*
- * File Browser - Header
- * Pure C Image Viewer
- */
+// file browser header
+// handles navigating through images in a folder
 
 #ifndef FILE_BROWSER_H
 #define FILE_BROWSER_H
@@ -9,10 +7,9 @@
 #include <stdio.h>
 #include <windows.h>
 
-
 #define MAX_FILES 10000
 
-// File browser state
+// browser state
 typedef struct {
   char files[MAX_FILES][MAX_PATH];
   int fileCount;
@@ -20,7 +17,7 @@ typedef struct {
   char currentDir[MAX_PATH];
 } FileBrowser;
 
-// Function declarations
+// functions
 void FileBrowser_Init(FileBrowser *browser);
 int FileBrowser_OpenDialog(FileBrowser *browser, HWND hwnd);
 int FileBrowser_LoadDirectory(FileBrowser *browser, const char *filepath);
@@ -29,4 +26,4 @@ const char *FileBrowser_Next(FileBrowser *browser);
 const char *FileBrowser_Previous(FileBrowser *browser);
 int FileBrowser_IsImageFile(const char *filename);
 
-#endif // FILE_BROWSER_H
+#endif

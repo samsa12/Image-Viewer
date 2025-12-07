@@ -1,0 +1,18 @@
+# ignore these
+backups/
+*.exe
+*.o
+*.obj
+*.zip
+*.pdf
+*.gif
+
+# keep source and docs
+!src/
+!lib/
+!*.md
+!*.bat
+!*.ico
+!*.png
+!*.rc
+!*.txt

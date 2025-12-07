@@ -1,28 +1,27 @@
-/*
- * Pure C Image Viewer
- * Main Entry Point
- *
- * Controls:
- *   O              - Open file dialog
- *   Left/Right     - Previous/Next image
- *   F11 / F        - Toggle fullscreen
- *   0 / 1          - Fit to window / Actual size
- *   +/-            - Zoom in/out (or slideshow speed)
- *   Mouse Wheel    - Zoom at cursor
- *   Left Drag      - Pan image
- *   S              - Start/stop slideshow
- *   Ctrl+S         - Save edited image (BMP)
- *   I              - Toggle info panel
- *   T              - Toggle dark/light theme
- *   R / L          - Rotate right/left 90 degrees
- *   H / V          - Flip horizontal/vertical
- *   Ctrl+C         - Copy to clipboard
- *   Delete         - Delete to recycle bin
- *   E              - Open in Explorer
- *   W              - Set as wallpaper
- *   P              - Print image
- *   Escape         - Exit fullscreen/slideshow or quit
- */
+// pure c image viewer
+// main entry point
+//
+// controls:
+//   o              open file
+//   left/right     prev/next image
+//   f11 or f       fullscreen
+//   0 / 1          fit to window / actual size
+//   +/-            zoom (or slideshow speed)
+//   scroll         zoom at cursor
+//   drag           pan around
+//   s              slideshow
+//   ctrl+s         save as bmp
+//   ctrl+z         undo
+//   i              info panel
+//   t              theme toggle
+//   r / l          rotate
+//   h / v          flip
+//   ctrl+c         copy
+//   del            trash
+//   e              open in explorer
+//   w              set wallpaper
+//   p              print
+//   esc            exit
 
 #include "file_browser.h"
 #include "image_loader.h"
