@@ -1,0 +1,85 @@
+how it works
+=============
+
+this is a quick rundown of how everything works under the hood
+
+
+the basics
+----------
+
+its a pure c windows app using win32 api directly. no frameworks, no runtime dependencies.
+when you run it, it creates a window and waits for you to either:
+- pass an image as a command line argument
+- drag and drop an image onto it
+- press o to open a file dialog
+
+
+loading images
+--------------
+
+uses stb_image library (single header, public domain) to decode images.
+supports png, jpg, bmp, gif, tga, psd, hdr, pic, pnm.
+all images get converted to rgba internally so everything is handled the same way.
+
+for animated gifs it loads all frames into memory with their delay times.
+a timer triggers frame advances at the right intervals.
+
+
+rendering
+---------
+
+images get converted to a windows bitmap (dib) for display.
+rendering uses stretchblt for zooming with halftone mode for quality.
+the renderer tracks zoom level and pan offset separately.
+
+when you zoom with the scroll wheel, it zooms centered on your cursor position.
+when you drag, it just updates the pan offset.
+
+
+file browsing
+-------------
+
+when you open an image, it scans the folder for all other images.
+stores up to 10000 file paths in memory.
+left/right arrows just increment/decrement an index and load that file.
+
+
+editing
+-------
+
+all edits happen on the pixel data in memory.
+brightness adds a value to each rgb channel.
+contrast multiplies each channel relative to middle gray.
+saturation converts to hsl, adjusts s, converts back.
+
+rotate/flip operations reallocate the pixel buffer and rearrange data.
+crop just creates a new smaller buffer with the selected region.
+
+when you save, it writes out a bmp file since thats simple to encode.
+
+
+themes
+------
+
+just swaps the color variables used for drawing backgrounds and text.
+dark theme is default because its 2024 and we have standards.
+
+
+slideshow
+---------
+
+a windows timer fires at the configured interval (default 3 seconds).
+on each tick it loads the next image.
++/- keys adjust the interval while slideshow is running.
+
+
+system integration
+------------------
+
+set as wallpaper uses SystemParametersInfo with SPI_SETDESKWALLPAPER.
+delete uses SHFileOperation with FOF_ALLOWUNDO to send to recycle bin.
+copy to clipboard creates a dib and puts it on the clipboard.
+print uses the standard print dialog and StretchDIBits to the printer dc.
+
+
+thats pretty much it. simple program, does what it says.
