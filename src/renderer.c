@@ -1,6 +1,6 @@
 /*
  * Renderer - Implementation
- * Pure C Image Viewer
+ * pix - renderer
  */
 
 #include "renderer.h"

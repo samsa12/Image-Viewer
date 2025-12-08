@@ -1,11 +1,14 @@
 /*
  * Image Loader - Implementation
- * Pure C Image Viewer
+ * pix - image loader
  */
 
 #define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "image_loader.h"
 #include "../lib/stb_image.h"
+#include "../lib/stb_image_write.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +41,197 @@ static unsigned char *LoadFileToMemory(const char *filepath, int *outSize) {
   }
   fclose(f);
   return buffer;
+}
+
+// Parse EXIF data from JPEG file
+static void ParseExifData(const char *filepath, ExifData *exif) {
+  memset(exif, 0, sizeof(ExifData));
+
+  FILE *f = fopen(filepath, "rb");
+  if (!f)
+    return;
+
+  // Check JPEG magic
+  unsigned char header[2];
+  if (fread(header, 1, 2, f) != 2 || header[0] != 0xFF || header[1] != 0xD8) {
+    fclose(f);
+    return; // Not a JPEG
+  }
+
+  // Look for APP1 marker (EXIF)
+  while (!feof(f)) {
+    unsigned char marker[2];
+    if (fread(marker, 1, 2, f) != 2)
+      break;
+
+    if (marker[0] != 0xFF)
+      break;
+
+    // Read segment length
+    unsigned char lenBytes[2];
+    if (fread(lenBytes, 1, 2, f) != 2)
+      break;
+    int segLen = (lenBytes[0] << 8) | lenBytes[1];
+
+    if (marker[1] == 0xE1) { // APP1 = EXIF
+      // Read EXIF header
+      char exifHeader[6];
+      if (fread(exifHeader, 1, 6, f) != 6)
+        break;
+
+      if (memcmp(exifHeader, "Exif\0\0", 6) != 0) {
+        fseek(f, segLen - 8, SEEK_CUR);
+        continue;
+      }
+
+      // Read TIFF header
+      long tiffStart = ftell(f);
+      unsigned char tiffHeader[8];
+      if (fread(tiffHeader, 1, 8, f) != 8)
+        break;
+
+      int littleEndian = (tiffHeader[0] == 'I' && tiffHeader[1] == 'I');
+
+// Helper macros for endianness
+#define READ16(p)                                                              \
+  (littleEndian ? ((p)[0] | ((p)[1] << 8)) : (((p)[0] << 8) | (p)[1]))
+#define READ32(p)                                                              \
+  (littleEndian ? ((p)[0] | ((p)[1] << 8) | ((p)[2] << 16) | ((p)[3] << 24))   \
+                : (((p)[0] << 24) | ((p)[1] << 16) | ((p)[2] << 8) | (p)[3]))
+
+      int ifdOffset = READ32(tiffHeader + 4);
+      fseek(f, tiffStart + ifdOffset, SEEK_SET);
+
+      unsigned char countBytes[2];
+      if (fread(countBytes, 1, 2, f) != 2)
+        break;
+      int numEntries = READ16(countBytes);
+
+      char make[32] = {0};
+      char model[32] = {0};
+
+      for (int i = 0; i < numEntries; i++) {
+        unsigned char entry[12];
+        if (fread(entry, 1, 12, f) != 12)
+          break;
+
+        int tag = READ16(entry);
+        int type = READ16(entry + 2);
+        int count = READ32(entry + 4);
+        int valueOffset = READ32(entry + 8);
+
+        long savePos = ftell(f);
+
+        // Read string value
+        if (type == 2 && count < 64) { // ASCII string
+          long strOffset =
+              (count > 4) ? (tiffStart + valueOffset) : (savePos - 4);
+          fseek(f, strOffset, SEEK_SET);
+          char strVal[64] = {0};
+          fread(strVal, 1, count - 1, f);
+
+          if (tag == 0x010F)
+            strncpy(make, strVal, 31); // Make
+          else if (tag == 0x0110)
+            strncpy(model, strVal, 31); // Model
+          else if (tag == 0x0132)
+            strncpy(exif->dateTime, strVal, 31); // DateTime
+          else if (tag == 0x9003)
+            strncpy(exif->dateTime, strVal, 31); // DateTimeOriginal
+        }
+
+        // Read EXIF sub-IFD for more details
+        if (tag == 0x8769) { // ExifIFDPointer
+          fseek(f, tiffStart + valueOffset, SEEK_SET);
+          unsigned char subCount[2];
+          if (fread(subCount, 1, 2, f) == 2) {
+            int subEntries = READ16(subCount);
+            for (int j = 0; j < subEntries; j++) {
+              unsigned char subEntry[12];
+              if (fread(subEntry, 1, 12, f) != 12)
+                break;
+
+              int subTag = READ16(subEntry);
+              int subType = READ16(subEntry + 2);
+              (void)READ32(subEntry + 4); // subCount unused
+              int subValue = READ32(subEntry + 8);
+
+              long subSave = ftell(f);
+
+              if (subTag == 0x829A && subType == 5) { // ExposureTime (rational)
+                fseek(f, tiffStart + subValue, SEEK_SET);
+                unsigned char rat[8];
+                if (fread(rat, 1, 8, f) == 8) {
+                  int num = READ32(rat);
+                  int den = READ32(rat + 4);
+                  if (den > 0) {
+                    if (num == 1)
+                      snprintf(exif->exposure, 31, "1/%d", den);
+                    else
+                      snprintf(exif->exposure, 31, "%d/%d", num, den);
+                  }
+                }
+              } else if (subTag == 0x829D && subType == 5) { // FNumber
+                fseek(f, tiffStart + subValue, SEEK_SET);
+                unsigned char rat[8];
+                if (fread(rat, 1, 8, f) == 8) {
+                  int num = READ32(rat);
+                  int den = READ32(rat + 4);
+                  if (den > 0)
+                    snprintf(exif->aperture, 15, "f/%.1f", (float)num / den);
+                }
+              } else if (subTag == 0x8827) { // ISO
+                snprintf(exif->iso, 15, "%d", subValue);
+              } else if (subTag == 0x920A && subType == 5) { // FocalLength
+                fseek(f, tiffStart + subValue, SEEK_SET);
+                unsigned char rat[8];
+                if (fread(rat, 1, 8, f) == 8) {
+                  int num = READ32(rat);
+                  int den = READ32(rat + 4);
+                  if (den > 0)
+                    snprintf(exif->focalLength, 15, "%dmm", num / den);
+                }
+              } else if (subTag == 0x9003 && subType == 2) { // DateTimeOriginal
+                fseek(f, tiffStart + subValue, SEEK_SET);
+                char dt[32] = {0};
+                fread(dt, 1, 19, f);
+                strncpy(exif->dateTime, dt, 31);
+              }
+
+              fseek(f, subSave, SEEK_SET);
+            }
+          }
+        }
+
+        fseek(f, savePos, SEEK_SET);
+      }
+
+      // Combine make and model
+      if (make[0] && model[0]) {
+        // Skip make in model if it starts with make
+        if (strstr(model, make) == model)
+          strncpy(exif->camera, model, 63);
+        else
+          snprintf(exif->camera, 63, "%s %s", make, model);
+      } else if (model[0]) {
+        strncpy(exif->camera, model, 63);
+      } else if (make[0]) {
+        strncpy(exif->camera, make, 63);
+      }
+
+      exif->hasExif =
+          (exif->camera[0] || exif->dateTime[0] || exif->exposure[0]);
+
+#undef READ16
+#undef READ32
+      break;
+    }
+
+    // Skip to next segment
+    fseek(f, segLen - 2, SEEK_CUR);
+  }
+
+  fclose(f);
 }
 
 int ImageLoader_Load(const char *filepath, ImageData *image) {
@@ -119,12 +313,8 @@ int ImageLoader_Load(const char *filepath, ImageData *image) {
     return 0;
   }
 
-  // Store original copy for reset
-  int pixelSize = image->width * image->height * 4;
-  image->original = (unsigned char *)malloc(pixelSize);
-  if (image->original) {
-    memcpy(image->original, image->pixels, pixelSize);
-  }
+  // no longer keeping original in ram - reset reloads from disk
+  image->original = NULL;
   image->undo = NULL;
 
   // Store filepath
@@ -133,6 +323,9 @@ int ImageLoader_Load(const char *filepath, ImageData *image) {
   image->isAnimated = 0;
   image->frameCount = 1;
   image->currentFrame = 0;
+
+  // Parse EXIF data (for JPEGs)
+  ParseExifData(filepath, &image->exif);
 
   return 1;
 }
@@ -224,8 +417,6 @@ int ImageLoader_Undo(ImageData *image) {
   if (!image || !image->undo)
     return 0;
 
-  int pixelSize = image->width * image->height * 4;
-
   // Swap pixels and undo (so we can redo)
   unsigned char *temp = image->pixels;
   image->pixels = image->undo;
@@ -235,16 +426,30 @@ int ImageLoader_Undo(ImageData *image) {
 }
 
 int ImageLoader_Reset(ImageData *image) {
-  if (!image || !image->original)
+  if (!image || !image->filepath[0])
     return 0;
 
-  int pixelSize = image->width * image->height * 4;
-
-  // Save current as undo before reset
+  // save current as undo before reset
   ImageLoader_SaveUndo(image);
 
-  // Copy original back to pixels
-  memcpy(image->pixels, image->original, pixelSize);
+  // reload from disk (memory efficient - no need to keep original in ram)
+  int w, h, c;
+  unsigned char *fresh = stbi_load(image->filepath, &w, &h, &c, 4);
+  if (!fresh)
+    return 0;
+
+  // free current pixels and replace
+  if (image->pixels) {
+    if (image->isAnimated) {
+      free(image->pixels);
+    } else {
+      stbi_image_free(image->pixels);
+    }
+  }
+
+  image->pixels = fresh;
+  image->width = w;
+  image->height = h;
 
   return 1;
 }
@@ -538,6 +743,101 @@ void ImageLoader_Resize(ImageData *image, int newWidth, int newHeight) {
             image->pixels[(y1 * image->width + x1) * 4 + c] * xFrac;
         float val = top * (1 - yFrac) + bot * yFrac;
         newPixels[(y * newWidth + x) * 4 + c] = (unsigned char)val;
+      }
+    }
+  }
+
+  free(image->pixels);
+  image->pixels = newPixels;
+  image->width = newWidth;
+  image->height = newHeight;
+}
+
+// lanczos kernel - sinc(x) * sinc(x/a) windowed
+static double lanczos_kernel(double x, int a) {
+  if (x == 0.0)
+    return 1.0;
+  if (x < -a || x > a)
+    return 0.0;
+
+  double pi = 3.14159265358979323846;
+  double pix = pi * x;
+  return (sin(pix) / pix) * (sin(pix / a) / (pix / a));
+}
+
+// clamp helper
+static int clamp_int(int v, int lo, int hi) {
+  if (v < lo)
+    return lo;
+  if (v > hi)
+    return hi;
+  return v;
+}
+
+// lanczos-3 resize - photoshop quality
+void ImageLoader_ResizeLanczos(ImageData *image, int newWidth, int newHeight) {
+  if (!image || !image->pixels || newWidth <= 0 || newHeight <= 0)
+    return;
+
+  int a = 3; // lanczos-3 uses 3-tap kernel
+  int srcW = image->width;
+  int srcH = image->height;
+
+  unsigned char *newPixels = (unsigned char *)malloc(newWidth * newHeight * 4);
+  if (!newPixels)
+    return;
+
+  double xRatio = (double)srcW / newWidth;
+  double yRatio = (double)srcH / newHeight;
+
+// parallelize across rows for multi-core speedup
+#pragma omp parallel for schedule(dynamic)
+  for (int y = 0; y < newHeight; y++) {
+    double srcY = (y + 0.5) * yRatio - 0.5;
+    int y0 = (int)floor(srcY);
+
+    for (int x = 0; x < newWidth; x++) {
+      double srcX = (x + 0.5) * xRatio - 0.5;
+      int x0 = (int)floor(srcX);
+
+      double r = 0, g = 0, b = 0, alpha = 0;
+      double weightSum = 0;
+
+      // sample neighborhood
+      for (int j = -a + 1; j <= a; j++) {
+        int py = clamp_int(y0 + j, 0, srcH - 1);
+        double wy = lanczos_kernel(srcY - (y0 + j), a);
+
+        for (int i = -a + 1; i <= a; i++) {
+          int px = clamp_int(x0 + i, 0, srcW - 1);
+          double wx = lanczos_kernel(srcX - (x0 + i), a);
+          double w = wx * wy;
+
+          int idx = (py * srcW + px) * 4;
+          r += image->pixels[idx + 0] * w;
+          g += image->pixels[idx + 1] * w;
+          b += image->pixels[idx + 2] * w;
+          alpha += image->pixels[idx + 3] * w;
+          weightSum += w;
+        }
+      }
+
+      // normalize and clamp
+      int dstIdx = (y * newWidth + x) * 4;
+      if (weightSum > 0) {
+        newPixels[dstIdx + 0] =
+            (unsigned char)clamp_int((int)(r / weightSum + 0.5), 0, 255);
+        newPixels[dstIdx + 1] =
+            (unsigned char)clamp_int((int)(g / weightSum + 0.5), 0, 255);
+        newPixels[dstIdx + 2] =
+            (unsigned char)clamp_int((int)(b / weightSum + 0.5), 0, 255);
+        newPixels[dstIdx + 3] =
+            (unsigned char)clamp_int((int)(alpha / weightSum + 0.5), 0, 255);
+      } else {
+        newPixels[dstIdx + 0] = 0;
+        newPixels[dstIdx + 1] = 0;
+        newPixels[dstIdx + 2] = 0;
+        newPixels[dstIdx + 3] = 255;
       }
     }
   }

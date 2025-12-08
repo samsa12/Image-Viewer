@@ -10,6 +10,17 @@
 // gif stuff
 #define MAX_GIF_FRAMES 500
 
+// EXIF metadata from camera
+typedef struct {
+  char camera[64];      // camera make/model
+  char dateTime[32];    // date taken
+  char exposure[32];    // shutter speed
+  char aperture[16];    // f-stop
+  char iso[16];         // ISO value
+  char focalLength[16]; // focal length mm
+  int hasExif;          // 1 if exif data was found
+} ExifData;
+
 // main image data struct
 typedef struct {
   unsigned char *pixels;   // current frame rgba data
@@ -19,6 +30,9 @@ typedef struct {
   int height;
   int channels;
   char filepath[MAX_PATH];
+
+  // EXIF metadata
+  ExifData exif;
 
   // gif animation
   int isAnimated;
@@ -56,6 +70,7 @@ void ImageLoader_Grayscale(ImageData *image);
 void ImageLoader_Crop(ImageData *image, int x, int y, int w, int h);
 void ImageLoader_Invert(ImageData *image);
 void ImageLoader_Resize(ImageData *image, int newWidth, int newHeight);
+void ImageLoader_ResizeLanczos(ImageData *image, int newWidth, int newHeight);
 void ImageLoader_Sharpen(ImageData *image);
 void ImageLoader_Blur(ImageData *image);
 void ImageLoader_AutoLevels(ImageData *image);

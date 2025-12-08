@@ -1,4 +1,4 @@
-// Image Viewer Resource File
+// pix Resource File
 #include "winres.h"
 
 IDI_ICON1 ICON "icon.ico"

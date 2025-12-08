@@ -1,9 +1,9 @@
 @echo off
-REM Pure C Image Viewer - Build Script
+REM pix - Build Script
 REM Requires: Visual Studio Build Tools or MinGW
 
 echo ========================================
-echo  Pure C Image Viewer - Build Script
+echo  pix - Build Script
 echo ========================================
 echo.
 
@@ -31,8 +31,8 @@ exit /b 1
 :msvc_build
 echo Compiling with MSVC...
 cl /nologo /O2 /W3 ^
-    /Fe:ImageViewer.exe ^
-    src\main.c src\image_loader.c src\renderer.c src\file_browser.c ^
+    /Fe:pix.exe ^
+    src\main.c src\image_loader.c src\renderer.c src\file_browser.c src\settings.c src\ui.c ^
     /I lib ^
     user32.lib gdi32.lib shell32.lib comdlg32.lib ^
     /link /SUBSYSTEM:WINDOWS
@@ -41,9 +41,9 @@ goto :success
 
 :gcc_build
 echo Compiling with GCC...
-gcc -O2 -Wall -mwindows ^
-    -o ImageViewer.exe ^
-    src/main.c src/image_loader.c src/renderer.c src/file_browser.c ^
+gcc -O2 -Wall -mwindows -fopenmp ^
+    -o pix.exe ^
+    src/main.c src/image_loader.c src/renderer.c src/file_browser.c src/settings.c src/ui.c ^
     resource.o ^
     -I lib ^
     -lgdi32 -lshell32 -lcomdlg32
@@ -62,12 +62,12 @@ exit /b 1
 echo.
 echo ========================================
 echo  BUILD SUCCESSFUL!
-echo  Output: ImageViewer.exe
+echo  Output: pix.exe
 echo ========================================
 echo.
 
 REM Cleanup MSVC temporary files
 del *.obj 2>nul
 
-echo Run ImageViewer.exe to start the application.
+echo Run pix.exe to start the application.
 pause

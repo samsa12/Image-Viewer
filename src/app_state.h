@@ -9,7 +9,6 @@
 #include "renderer.h"
 #include <windows.h>
 
-
 // global state - defined in main.c
 extern ImageData g_image;
 extern Renderer g_renderer;
@@ -29,6 +28,11 @@ extern int g_editBrightness;
 extern float g_editContrast;
 extern float g_editSaturation;
 extern int g_editSelection;
+
+// additional UI state
+extern BOOL g_showZoom;
+extern BOOL g_showHelp;
+extern BOOL g_showSettings;
 
 // theme colors
 extern COLORREF g_bgColor;

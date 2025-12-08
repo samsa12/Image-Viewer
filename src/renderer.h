@@ -7,7 +7,6 @@
 #include "image_loader.h"
 #include <windows.h>
 
-
 // main renderer state
 typedef struct {
   HBITMAP hBitmap;
@@ -25,6 +24,11 @@ typedef struct {
   float cachedScale;
   int cachedWidth;
   int cachedHeight;
+
+  // lanczos-scaled buffer for hq zoom
+  unsigned char *scaledPixels;
+  int scaledPixelsW;
+  int scaledPixelsH;
 } Renderer;
 
 // functions

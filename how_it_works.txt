@@ -1,7 +1,21 @@
-how it works
-=============
+pix - how it works
+===================
 
-this is a quick rundown of how everything works under the hood
+this is a quick rundown of how pix works under the hood
+
+
+the philosophy
+--------------
+
+every decision here optimizes for one thing: getting out of your way.
+
+- no frameworks means no framework updates breaking your viewer
+- no runtime means no "please install .NET 6" dialogs
+- no plugins means no hunting for the right dll
+- lazy memory allocation means your other apps keep breathing
+- disk reload for reset means viewing doesnt cost you ram you don't need to spend
+
+its the unix philosophy applied to windows: do one thing, do it well, don't be clever.
 
 
 the basics
@@ -24,13 +38,24 @@ all images get converted to rgba internally so everything is handled the same wa
 for animated gifs it loads all frames into memory with their delay times.
 a timer triggers frame advances at the right intervals.
 
+exif metadata:
+- jpeg files get their exif data parsed automatically
+- extracts: camera make/model, date taken, exposure, aperture, iso, focal length
+- shows up in the info panel (press i) when available
+- no external libs - custom parser reads the jpeg app1 marker directly
+
 
 rendering
 ---------
 
 images get converted to a windows bitmap (dib) for display.
-rendering uses stretchblt for zooming with halftone mode for quality.
+rendering uses stretchblt for zooming.
 the renderer tracks zoom level and pan offset separately.
+
+zoom interpolation:
+- zoomed in (100%+): nearest neighbor for crisp pixels
+- zoomed out (<100%): halftone for smooth downscaling
+- this is how the good viewers do it
 
 when you zoom with the scroll wheel, it zooms centered on your cursor position.
 when you drag, it just updates the pan offset.
@@ -40,6 +65,38 @@ theres caching infrastructure for scaled bitmaps now:
 - cachedScale tracks what zoom level was cached
 - helps avoid recomputing scaled images on every pan
 - init and cleanup handle the cache memory properly
+
+lanczos-3 upscaling:
+- press q to upscale image 2x with photoshop-quality interpolation
+- uses sinc-windowed sinc kernel (same as photoshop/lightroom)
+- multithreaded with openmp, uses all your cores
+- pure math, no external libs
+- great for enlarging small images before zooming
+- max size configurable: 8K, 16K, or 32K
+
+
+settings (resource controls)
+----------------------------
+
+press f2 to open the settings panel. all settings save to pix.ini.
+
+max image size:
+- controls how large you can upscale images
+- default: 8K (8192x8192)
+- can go up to 32K if you have the ram
+- press M in settings panel to cycle
+
+cpu threads:
+- controls how many cores lanczos uses
+- default: auto (all cores)
+- useful if you want to leave cores free for other apps
+- press T in settings panel to cycle
+
+memory warnings:
+- warns before operations that need 500MB+ ram
+- toggle with W in settings panel
+
+settings persist across restarts in pix.ini (same folder as exe).
 
 
 file browsing
@@ -62,12 +119,32 @@ rotate/flip operations reallocate the pixel buffer and rearrange data.
 crop just creates a new smaller buffer with the selected region.
 
 theres an undo system now:
-- original image is kept in memory when you load
 - before each destructive edit, current state is saved
 - ctrl+z swaps between current and previous state
 - works like a toggle, press again to redo
+- undo buffer is lazy, only allocated when you actually edit
 
-when you save, it writes out a bmp file since thats simple to encode.
+reset to original:
+- shift+p reloads the image fresh from disk
+- no copy kept in ram, so viewing doesnt waste memory
+- trades a tiny disk read for 33% less ram usage
+- smart tradeoff since most people just view, dont edit
+
+crop:
+- shift+c enters crop mode
+- click and drag on image to draw selection rectangle
+- selection starts where you click, drag to size
+- c to execute the crop
+- esc to cancel
+- dims area outside selection so you see what youre keeping
+
+when you save:
+- ctrl+s opens save dialog with format options
+- detects format from file extension
+- png for lossless (default)
+- jpg at quality 90 for smaller size
+- bmp if you really need it
+- uses stb_image_write, same author as stb_image
 
 
 themes
@@ -75,6 +152,27 @@ themes
 
 just swaps the color variables used for drawing backgrounds and text.
 dark theme is default because its 2025 and we have standards.
+
+
+ui overlays
+-----------
+
+theres a few overlay elements that show on top of the image:
+
+zoom % indicator:
+- shows current zoom level in bottom left corner
+- styled box with subtle border
+- toggle it off with z key if you dont want it
+
+keyboard help:
+- press ? or f1 to see all shortcuts
+- centered panel with monospace font
+- press again to close
+
+status bar:
+- shows filename, dimensions, zoom %, position in folder
+- automatically hides in fullscreen mode for cleaner viewing
+- stays visible in windowed mode
 
 
 slideshow
@@ -98,14 +196,57 @@ code structure
 --------------
 
 the code is split into modules:
-- main.c - window, input handling, ui drawing
+- main.c - window, input handling, core logic
+- ui.c/.h - all ui drawing functions (overlays, panels, status bar)
 - image_loader.c/.h - loading, editing, undo
 - renderer.c/.h - bitmap creation, scaling, painting
 - file_browser.c/.h - folder scanning, navigation
+- settings.c/.h - config file handling
 - app_state.h - shared globals for cross-file access
 
 globals that need to be accessed across files are declared extern in app_state.h.
 the actual definitions live in main.c.
 
+ui drawing was extracted to ui.c to keep main.c focused on logic.
+all Draw* functions live there now - info panel, thumbnails, status bar, 
+help overlay, settings overlay, edit panel, zoom indicator, etc.
+
+
+batch mode
+----------
+
+for command line warriors:
+
+pix.exe --batch-upscale C:\photos 2
+
+- first arg: folder path with your images
+- second arg: scale factor (default 2x if not specified)
+- outputs to an "upscaled" subfolder it creates
+- shows progress in console as it works through each file
+- uses same lanczos-3 quality as the interactive upscale
+- multithreaded, uses your configured cpu threads setting
+
+no gui, no popups, just runs and exits when done.
+perfect for scripting or processing vacation photos overnight.
+
+
+why it matters
+--------------
+
+most image viewers today are either:
+- bloated apps trying to be photo managers (windows photos)
+- legacy tools with 1998 UIs (irfanview)
+- modern but heavy (.NET based, electron apps)
+
+this one is different. its what happens when you actually think about:
+- cold start time (instant, not "loading...")
+- memory footprint (lazy everything, reload from disk when possible)
+- rendering quality (lanczos when you need it, smart interpolation always)
+- simplicity (one exe, zero config, dark mode default)
+
+no telemetry. no accounts. no "whats new" popups.
+just double click and see your image.
+
+and if you need to upscale 500 photos? one command line.
 
 thats pretty much it. simple program, does what it says.

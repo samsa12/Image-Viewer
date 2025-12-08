@@ -10,7 +10,7 @@
 //   scroll         zoom at cursor
 //   drag           pan around
 //   s              slideshow
-//   ctrl+s         save as bmp
+//   ctrl+s         save as png/jpg/bmp
 //   ctrl+z         undo
 //   i              info panel
 //   t              theme toggle
@@ -23,9 +23,12 @@
 //   p              print
 //   esc            exit
 
+#include "../lib/stb_image_write.h"
 #include "file_browser.h"
 #include "image_loader.h"
 #include "renderer.h"
+#include "settings.h"
+#include "ui.h"
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -35,7 +38,7 @@
 
 // Window class name
 #define WINDOW_CLASS "PureCImageViewer"
-#define WINDOW_TITLE "Image Viewer"
+#define WINDOW_TITLE "pix"
 
 // Timer IDs
 #define TIMER_SLIDESHOW 1
@@ -70,6 +73,16 @@ BOOL g_darkTheme = TRUE;
 BOOL g_showThumbnails = FALSE;
 BOOL g_showStatusBar = TRUE;
 BOOL g_showEditPanel = FALSE;
+BOOL g_showZoom = TRUE;      // zoom % overlay
+BOOL g_showHelp = FALSE;     // keyboard help popup
+BOOL g_showSettings = FALSE; // settings panel
+
+// Selection mode for cropping
+BOOL g_selectMode = FALSE;
+RECT g_selection = {0, 0, 0, 0};
+static BOOL g_selectDragging = FALSE;
+static int g_selectDragX = 0;
+static int g_selectDragY = 0;
 
 // Edit mode state (shared)
 int g_editBrightness = 0;      // -100 to +100
@@ -92,18 +105,12 @@ COLORREF g_panelBgColor = RGB(28, 28, 30);   // Subtle panel
 COLORREF g_accentColor = RGB(70, 130, 180);  // Steel blue accent
 COLORREF g_statusBarColor = RGB(24, 24, 26); // Status bar bg
 
-// Thumbnail cache (unused for now)
-#define THUMB_CACHE_SIZE 50
-static HBITMAP g_thumbCache[THUMB_CACHE_SIZE];
-static int g_thumbCacheIdx[THUMB_CACHE_SIZE];
-
 // Function prototypes
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 void LoadImageFile(HWND hwnd, const char *filepath);
 void UpdateWindowTitle(HWND hwnd);
 void ToggleFullscreen(HWND hwnd);
 void ToggleSlideshow(HWND hwnd);
-void DrawInfoPanel(HDC hdc, RECT *clientRect);
 void ToggleTheme(void);
 void CopyImageToClipboard(HWND hwnd);
 void DeleteCurrentImage(HWND hwnd);
@@ -111,16 +118,136 @@ void OpenInExplorer(void);
 void SetAsWallpaper(void);
 void PrintImage(HWND hwnd);
 void SaveImage(HWND hwnd);
-void DrawThumbnailStrip(HWND hwnd, HDC hdc, RECT *clientRect);
-void DrawStatusBar(HDC hdc, RECT *clientRect);
-void DrawImageShadow(HDC hdc, int x, int y, int w, int h);
-void DrawSlideshowProgress(HDC hdc, RECT *clientRect);
-void DrawEditPanel(HDC hdc, RECT *clientRect);
 void ApplyEdits(HWND hwnd);
+
+// Batch processing mode (returns 1 if batch mode was used, 0 for normal GUI)
+int RunBatchMode(int argc, char *argv[]) {
+  if (argc < 3)
+    return 0;
+
+  // Check for --batch-upscale
+  if (strcmp(argv[1], "--batch-upscale") == 0) {
+    const char *folder = argv[2];
+    int scale = (argc > 3) ? atoi(argv[3]) : 2; // default 2x
+
+    // Attach console for output
+    AttachConsole(ATTACH_PARENT_PROCESS);
+    FILE *con = freopen("CONOUT$", "w", stdout);
+
+    printf("\npix batch upscale\n");
+    printf("folder: %s\n", folder);
+    printf("scale: %dx\n", scale);
+    printf("--------------------------------\n");
+
+    // Create output folder
+    char outFolder[MAX_PATH];
+    snprintf(outFolder, sizeof(outFolder), "%s\\upscaled", folder);
+    CreateDirectoryA(outFolder, NULL);
+
+    // Find all images
+    char searchPath[MAX_PATH];
+    snprintf(searchPath, sizeof(searchPath), "%s\\*.*", folder);
+
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(searchPath, &findData);
+    int processed = 0;
+
+    if (hFind != INVALID_HANDLE_VALUE) {
+      do {
+        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+          // Check if image file
+          const char *ext = strrchr(findData.cFileName, '.');
+          if (ext &&
+              (_stricmp(ext, ".jpg") == 0 || _stricmp(ext, ".jpeg") == 0 ||
+               _stricmp(ext, ".png") == 0 || _stricmp(ext, ".bmp") == 0)) {
+
+            char inputPath[MAX_PATH];
+            snprintf(inputPath, sizeof(inputPath), "%s\\%s", folder,
+                     findData.cFileName);
+
+            printf("processing: %s ... ", findData.cFileName);
+            fflush(stdout);
+
+            // Load image
+            ImageData img = {0};
+            if (ImageLoader_Load(inputPath, &img)) {
+              // Upscale
+              int newW = img.width * scale;
+              int newH = img.height * scale;
+              ImageLoader_ResizeLanczos(&img, newW, newH);
+
+              // Save to output folder
+              char outputPath[MAX_PATH];
+              snprintf(outputPath, sizeof(outputPath), "%s\\%s", outFolder,
+                       findData.cFileName);
+
+              // Use stbi_write for PNG output
+              stbi_write_png(outputPath, img.width, img.height, 4, img.pixels,
+                             img.width * 4);
+
+              ImageLoader_Free(&img);
+              printf("done (%dx%d)\n", newW, newH);
+              processed++;
+            } else {
+              printf("failed to load\n");
+            }
+          }
+        }
+      } while (FindNextFileA(hFind, &findData));
+      FindClose(hFind);
+    }
+
+    printf("--------------------------------\n");
+    printf("processed %d images\n", processed);
+    printf("output: %s\n\n", outFolder);
+
+    if (con)
+      fclose(con);
+    return 1; // batch mode was used
+  }
+
+  return 0; // not batch mode
+}
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
                    LPSTR lpCmdLine, int nCmdShow) {
   (void)hPrevInstance;
+
+  // Check for batch mode (command-line operations)
+  int argc;
+  LPWSTR *argvW = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argvW && argc >= 2) {
+    // Convert to char* for our batch function
+    char **argv = (char **)malloc(argc * sizeof(char *));
+    for (int i = 0; i < argc; i++) {
+      int len =
+          WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, NULL, 0, NULL, NULL);
+      argv[i] = (char *)malloc(len);
+      WideCharToMultiByte(CP_UTF8, 0, argvW[i], -1, argv[i], len, NULL, NULL);
+    }
+    LocalFree(argvW);
+
+    // Load settings for batch mode too
+    Settings_Load(&g_settings);
+    Settings_ApplyThreads(&g_settings);
+
+    if (RunBatchMode(argc, argv)) {
+      // Batch mode completed, exit
+      for (int i = 0; i < argc; i++)
+        free(argv[i]);
+      free(argv);
+      return 0;
+    }
+    for (int i = 0; i < argc; i++)
+      free(argv[i]);
+    free(argv);
+  } else if (argvW) {
+    LocalFree(argvW);
+  }
+
+  // Load settings from pix.ini
+  Settings_Load(&g_settings);
+  Settings_ApplyThreads(&g_settings);
 
   // Initialize components
   Renderer_Init(&g_renderer);
@@ -245,13 +372,12 @@ void UpdateWindowTitle(HWND hwnd) {
     if (g_slideshowActive) {
       float seconds = g_slideshowInterval / 1000.0f;
       snprintf(title, sizeof(title),
-               "%s - %dx%d - [%d/%d] - SLIDESHOW (%.1fs) - Image Viewer",
-               filename, g_image.width, g_image.height,
-               g_browser.currentIndex + 1, g_browser.fileCount, seconds);
+               "%s - %dx%d - [%d/%d] - SLIDESHOW (%.1fs) - pix", filename,
+               g_image.width, g_image.height, g_browser.currentIndex + 1,
+               g_browser.fileCount, seconds);
     } else {
-      snprintf(title, sizeof(title),
-               "%s - %dx%d - %d%% - [%d/%d] - Image Viewer", filename,
-               g_image.width, g_image.height, zoomPercent,
+      snprintf(title, sizeof(title), "%s - %dx%d - %d%% - [%d/%d] - pix",
+               filename, g_image.width, g_image.height, zoomPercent,
                g_browser.currentIndex + 1, g_browser.fileCount);
     }
     SetWindowTextA(hwnd, title);
@@ -470,7 +596,7 @@ void PrintImage(HWND hwnd) {
 
   DOCINFOA di = {0};
   di.cbSize = sizeof(di);
-  di.lpszDocName = "Image Viewer Print";
+  di.lpszDocName = "pix Print";
 
   if (StartDocA(printerDC, &di) > 0) {
     StartPage(printerDC);
@@ -531,500 +657,53 @@ void SaveImage(HWND hwnd) {
   if (!g_image.pixels)
     return;
 
-  char filename[MAX_PATH] = "edited_image.bmp";
+  char filename[MAX_PATH] = "edited_image.png";
 
   OPENFILENAMEA ofn = {0};
   ofn.lStructSize = sizeof(ofn);
   ofn.hwndOwner = hwnd;
-  ofn.lpstrFilter = "BMP Image\0*.bmp\0All Files\0*.*\0";
+  ofn.lpstrFilter = "PNG Image\0*.png\0JPEG Image\0*.jpg;*.jpeg\0BMP "
+                    "Image\0*.bmp\0All Files\0*.*\0";
   ofn.lpstrFile = filename;
   ofn.nMaxFile = MAX_PATH;
-  ofn.lpstrDefExt = "bmp";
+  ofn.lpstrDefExt = "png";
   ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
 
   if (!GetSaveFileNameA(&ofn))
     return;
 
-  // Create BMP file
-  FILE *f = fopen(filename, "wb");
-  if (!f) {
-    MessageBoxA(hwnd, "Failed to create file", "Error", MB_ICONERROR);
-    return;
-  }
-
   int width = g_image.width;
   int height = g_image.height;
-  int rowSize = ((width * 3 + 3) / 4) * 4;
-  int dataSize = rowSize * height;
+  int success = 0;
 
-  // BMP File Header
-  BITMAPFILEHEADER bfh = {0};
-  bfh.bfType = 0x4D42; // "BM"
-  bfh.bfSize = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + dataSize;
-  bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+  // determine format from extension
+  const char *ext = strrchr(filename, '.');
 
-  // BMP Info Header
-  BITMAPINFOHEADER bih = {0};
-  bih.biSize = sizeof(BITMAPINFOHEADER);
-  bih.biWidth = width;
-  bih.biHeight = height;
-  bih.biPlanes = 1;
-  bih.biBitCount = 24;
-  bih.biCompression = BI_RGB;
-
-  fwrite(&bfh, sizeof(bfh), 1, f);
-  fwrite(&bih, sizeof(bih), 1, f);
-
-  // Write pixel data (BGR, bottom-up)
-  BYTE *row = (BYTE *)malloc(rowSize);
-  for (int y = height - 1; y >= 0; y--) {
-    memset(row, 0, rowSize);
-    for (int x = 0; x < width; x++) {
-      int srcIdx = (y * width + x) * 4;
-      row[x * 3 + 0] = g_image.pixels[srcIdx + 2]; // B
-      row[x * 3 + 1] = g_image.pixels[srcIdx + 1]; // G
-      row[x * 3 + 2] = g_image.pixels[srcIdx + 0]; // R
-    }
-    fwrite(row, rowSize, 1, f);
-  }
-
-  free(row);
-  fclose(f);
-
-  MessageBoxA(hwnd, "Image saved successfully!", "Save", MB_ICONINFORMATION);
-}
-
-void DrawInfoPanel(HDC hdc, RECT *clientRect) {
-  if (!g_showInfo || !g_image.pixels)
-    return;
-
-  // Panel dimensions
-  int panelWidth = 280;
-  int panelHeight = 180;
-  int margin = 15;
-  int padding = 12;
-
-  RECT panelRect = {clientRect->right - panelWidth - margin, margin,
-                    clientRect->right - margin, margin + panelHeight};
-
-  // Draw semi-transparent panel background
-  HBRUSH panelBrush = CreateSolidBrush(g_panelBgColor);
-  FillRect(hdc, &panelRect, panelBrush);
-  DeleteObject(panelBrush);
-
-  // Draw border
-  HPEN borderPen = CreatePen(
-      PS_SOLID, 1, g_darkTheme ? RGB(80, 80, 80) : RGB(180, 180, 180));
-  HPEN oldPen = SelectObject(hdc, borderPen);
-  Rectangle(hdc, panelRect.left, panelRect.top, panelRect.right,
-            panelRect.bottom);
-  SelectObject(hdc, oldPen);
-  DeleteObject(borderPen);
-
-  // Setup text
-  SetBkMode(hdc, TRANSPARENT);
-  SetTextColor(hdc, g_textColor);
-
-  // Larger, clearer font for better readability
-  HFONT font =
-      CreateFontA(15, 0, 0, 0, FW_MEDIUM, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-  HFONT oldFont = SelectObject(hdc, font);
-
-  // Get filename
-  const char *filename = strrchr(g_image.filepath, '\\');
-  if (!filename)
-    filename = strrchr(g_image.filepath, '/');
-  filename = filename ? filename + 1 : g_image.filepath;
-
-  // Calculate file size
-  WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-  DWORD fileSize = 0;
-  if (GetFileAttributesExA(g_image.filepath, GetFileExInfoStandard,
-                           &fileInfo)) {
-    fileSize = fileInfo.nFileSizeLow;
-  }
-
-  char sizeStr[32];
-  if (fileSize >= 1024 * 1024) {
-    snprintf(sizeStr, sizeof(sizeStr), "%.2f MB", fileSize / (1024.0 * 1024.0));
-  } else if (fileSize >= 1024) {
-    snprintf(sizeStr, sizeof(sizeStr), "%.1f KB", fileSize / 1024.0);
+  if (ext && (_stricmp(ext, ".png") == 0)) {
+    // save as png
+    success =
+        stbi_write_png(filename, width, height, 4, g_image.pixels, width * 4);
+  } else if (ext &&
+             (_stricmp(ext, ".jpg") == 0 || _stricmp(ext, ".jpeg") == 0)) {
+    // save as jpg (quality 90)
+    success = stbi_write_jpg(filename, width, height, 4, g_image.pixels, 90);
+  } else if (ext && (_stricmp(ext, ".bmp") == 0)) {
+    // save as bmp
+    success = stbi_write_bmp(filename, width, height, 4, g_image.pixels);
   } else {
-    snprintf(sizeStr, sizeof(sizeStr), "%lu bytes", fileSize);
+    // default to png
+    success =
+        stbi_write_png(filename, width, height, 4, g_image.pixels, width * 4);
   }
 
-  // Draw info lines
-  int y = panelRect.top + padding;
-  int lineHeight = 22;
-  int labelX = panelRect.left + padding;
-
-  // Title
-  HFONT boldFont =
-      CreateFontA(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-  SelectObject(hdc, boldFont);
-  TextOutA(hdc, labelX, y, "Image Information", 17);
-  y += lineHeight + 5;
-
-  SelectObject(hdc, font);
-
-  char buffer[256];
-
-  // Filename (truncated if too long)
-  char shortName[30];
-  if (strlen(filename) > 28) {
-    strncpy(shortName, filename, 25);
-    strcpy(shortName + 25, "...");
+  if (success) {
+    MessageBoxA(hwnd, "Image saved successfully!", "Save", MB_ICONINFORMATION);
   } else {
-    strcpy(shortName, filename);
-  }
-  snprintf(buffer, sizeof(buffer), "Name: %s", shortName);
-  TextOutA(hdc, labelX, y, buffer, (int)strlen(buffer));
-  y += lineHeight;
-
-  // Dimensions
-  snprintf(buffer, sizeof(buffer), "Size: %d x %d pixels", g_image.width,
-           g_image.height);
-  TextOutA(hdc, labelX, y, buffer, (int)strlen(buffer));
-  y += lineHeight;
-
-  // File size
-  snprintf(buffer, sizeof(buffer), "File: %s", sizeStr);
-  TextOutA(hdc, labelX, y, buffer, (int)strlen(buffer));
-  y += lineHeight;
-
-  // Zoom level
-  snprintf(buffer, sizeof(buffer), "Zoom: %d%%",
-           (int)(g_renderer.scale * 100.0f));
-  TextOutA(hdc, labelX, y, buffer, (int)strlen(buffer));
-  y += lineHeight;
-
-  // Position in folder
-  snprintf(buffer, sizeof(buffer), "Position: %d of %d",
-           g_browser.currentIndex + 1, g_browser.fileCount);
-  TextOutA(hdc, labelX, y, buffer, (int)strlen(buffer));
-
-  SelectObject(hdc, oldFont);
-  DeleteObject(font);
-  DeleteObject(boldFont);
-}
-
-void DrawThumbnailStrip(HWND hwnd, HDC hdc, RECT *clientRect) {
-  if (!g_showThumbnails || g_browser.fileCount < 2)
-    return;
-
-  int stripY = clientRect->bottom - THUMB_STRIP_HEIGHT;
-  int stripWidth = clientRect->right - clientRect->left;
-
-  // Draw strip background
-  RECT stripRect = {0, stripY, stripWidth, clientRect->bottom};
-  HBRUSH stripBrush = CreateSolidBrush(RGB(20, 20, 20));
-  FillRect(hdc, &stripRect, stripBrush);
-  DeleteObject(stripBrush);
-
-  // Draw border at top
-  HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(60, 60, 60));
-  HPEN oldPen = SelectObject(hdc, borderPen);
-  MoveToEx(hdc, 0, stripY, NULL);
-  LineTo(hdc, stripWidth, stripY);
-  SelectObject(hdc, oldPen);
-  DeleteObject(borderPen);
-
-  // Calculate how many thumbnails fit
-  int thumbsVisible =
-      (stripWidth - THUMB_PADDING) / (THUMB_SIZE + THUMB_PADDING);
-  if (thumbsVisible < 1)
-    thumbsVisible = 1;
-
-  // Center the strip around current image
-  int startIdx = g_browser.currentIndex - thumbsVisible / 2;
-  if (startIdx < 0)
-    startIdx = 0;
-  if (startIdx + thumbsVisible > g_browser.fileCount) {
-    startIdx = g_browser.fileCount - thumbsVisible;
-    if (startIdx < 0)
-      startIdx = 0;
-  }
-
-  // Draw thumbnail placeholders with filenames
-  int x = THUMB_PADDING;
-  for (int i = 0; i < thumbsVisible && (startIdx + i) < g_browser.fileCount;
-       i++) {
-    int idx = startIdx + i;
-    int thumbY = stripY + THUMB_PADDING;
-
-    // Highlight current image
-    COLORREF bgColor =
-        (idx == g_browser.currentIndex) ? RGB(70, 130, 180) : RGB(50, 50, 50);
-    HBRUSH thumbBrush = CreateSolidBrush(bgColor);
-    RECT thumbRect = {x, thumbY, x + THUMB_SIZE, thumbY + THUMB_SIZE};
-    FillRect(hdc, &thumbRect, thumbBrush);
-    DeleteObject(thumbBrush);
-
-    // Draw border
-    HPEN thumbPen = CreatePen(
-        PS_SOLID, 1,
-        (idx == g_browser.currentIndex) ? RGB(100, 180, 255) : RGB(80, 80, 80));
-    SelectObject(hdc, thumbPen);
-    Rectangle(hdc, x, thumbY, x + THUMB_SIZE, thumbY + THUMB_SIZE);
-    DeleteObject(thumbPen);
-
-    // Draw file number
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(200, 200, 200));
-    char numStr[16];
-    snprintf(numStr, sizeof(numStr), "%d", idx + 1);
-    RECT numRect = thumbRect;
-    DrawTextA(hdc, numStr, -1, &numRect,
-              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    x += THUMB_SIZE + THUMB_PADDING;
+    MessageBoxA(hwnd, "Failed to save image", "Error", MB_ICONERROR);
   }
 }
 
-void DrawStatusBar(HDC hdc, RECT *clientRect) {
-  if (!g_showStatusBar)
-    return;
-
-  int barY = clientRect->bottom - STATUS_BAR_HEIGHT;
-  if (g_showThumbnails && g_browser.fileCount >= 2) {
-    barY -= THUMB_STRIP_HEIGHT;
-  }
-
-  // Draw bar background with subtle gradient effect
-  RECT barRect = {0, barY, clientRect->right, barY + STATUS_BAR_HEIGHT};
-  HBRUSH barBrush = CreateSolidBrush(g_statusBarColor);
-  FillRect(hdc, &barRect, barBrush);
-  DeleteObject(barBrush);
-
-  // Draw top border line
-  HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(45, 45, 48));
-  HPEN oldPen = SelectObject(hdc, borderPen);
-  MoveToEx(hdc, 0, barY, NULL);
-  LineTo(hdc, clientRect->right, barY);
-  SelectObject(hdc, oldPen);
-  DeleteObject(borderPen);
-
-  if (!g_image.pixels)
-    return;
-
-  // Create modern font
-  HFONT font =
-      CreateFontA(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-  HFONT oldFont = SelectObject(hdc, font);
-  SetBkMode(hdc, TRANSPARENT);
-
-  // Left side: filename and dimensions
-  const char *filename = strrchr(g_image.filepath, '\\');
-  filename = filename ? filename + 1 : g_image.filepath;
-
-  char leftText[256];
-  snprintf(leftText, sizeof(leftText), "  %s  |  %d × %d", filename,
-           g_image.width, g_image.height);
-
-  SetTextColor(hdc, g_textColor);
-  TextOutA(hdc, 10, barY + 6, leftText, (int)strlen(leftText));
-
-  // Right side: zoom and position
-  char rightText[128];
-  int zoom = (int)(g_renderer.scale * 100.0f);
-  snprintf(rightText, sizeof(rightText), "%d%%  |  %d / %d  ", zoom,
-           g_browser.currentIndex + 1, g_browser.fileCount);
-
-  SIZE textSize;
-  GetTextExtentPoint32A(hdc, rightText, (int)strlen(rightText), &textSize);
-  TextOutA(hdc, clientRect->right - textSize.cx - 10, barY + 6, rightText,
-           (int)strlen(rightText));
-
-  SelectObject(hdc, oldFont);
-  DeleteObject(font);
-}
-
-void DrawImageShadow(HDC hdc, int x, int y, int w, int h) {
-  // Draw subtle shadow layers
-  for (int i = SHADOW_SIZE; i > 0; i--) {
-    int alpha = 10 + (SHADOW_SIZE - i) * 3;
-    HPEN shadowPen = CreatePen(PS_SOLID, 1, RGB(0, 0, 0));
-    HPEN oldPen = SelectObject(hdc, shadowPen);
-
-    // Bottom shadow
-    MoveToEx(hdc, x + i, y + h + i, NULL);
-    LineTo(hdc, x + w + i, y + h + i);
-
-    // Right shadow
-    MoveToEx(hdc, x + w + i, y + i, NULL);
-    LineTo(hdc, x + w + i, y + h + i);
-
-    SelectObject(hdc, oldPen);
-    DeleteObject(shadowPen);
-  }
-}
-
-void DrawSlideshowProgress(HDC hdc, RECT *clientRect) {
-  if (!g_slideshowActive)
-    return;
-
-  DWORD elapsed = GetTickCount() - g_slideshowStartTime;
-  float progress = (float)elapsed / g_slideshowInterval;
-  if (progress > 1.0f)
-    progress = 1.0f;
-
-  // draw progress bar at top - slightly thicker and with glow
-  int barHeight = 4;
-  int barWidth = (int)(clientRect->right * progress);
-
-  // background track
-  RECT trackRect = {0, 0, clientRect->right, barHeight};
-  HBRUSH trackBrush = CreateSolidBrush(RGB(50, 50, 55));
-  FillRect(hdc, &trackRect, trackBrush);
-  DeleteObject(trackBrush);
-
-  // progress fill with gradient-like effect
-  if (barWidth > 0) {
-    // main bar
-    RECT progressRect = {0, 0, barWidth, barHeight};
-    HBRUSH progressBrush = CreateSolidBrush(g_accentColor);
-    FillRect(hdc, &progressRect, progressBrush);
-    DeleteObject(progressBrush);
-
-    // subtle highlight on top edge
-    RECT highlightRect = {0, 0, barWidth, 1};
-    HBRUSH highlightBrush = CreateSolidBrush(RGB(120, 170, 210));
-    FillRect(hdc, &highlightRect, highlightBrush);
-    DeleteObject(highlightBrush);
-  }
-}
-
-void DrawEditPanel(HDC hdc, RECT *clientRect) {
-  if (!g_showEditPanel)
-    return;
-
-  int panelX = clientRect->right - EDIT_PANEL_WIDTH;
-  int panelY = 50;
-  int panelH = 280;
-
-  // Panel background
-  RECT panelRect = {panelX, panelY, clientRect->right, panelY + panelH};
-  HBRUSH panelBrush = CreateSolidBrush(RGB(35, 35, 38));
-  FillRect(hdc, &panelRect, panelBrush);
-  DeleteObject(panelBrush);
-
-  // Border
-  HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(60, 60, 65));
-  HPEN oldPen = SelectObject(hdc, borderPen);
-  Rectangle(hdc, panelX, panelY, clientRect->right, panelY + panelH);
-  SelectObject(hdc, oldPen);
-  DeleteObject(borderPen);
-
-  // Font
-  HFONT font =
-      CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-  HFONT boldFont =
-      CreateFontA(15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                  DEFAULT_PITCH | FF_SWISS, "Segoe UI");
-  HFONT oldFont = SelectObject(hdc, boldFont);
-  SetBkMode(hdc, TRANSPARENT);
-
-  int x = panelX + 15;
-  int y = panelY + 15;
-  int lineH = 28;
-  int sliderW = EDIT_PANEL_WIDTH - 30;
-  int sliderH = 6;
-
-  // Title
-  SetTextColor(hdc, RGB(240, 240, 240));
-  TextOutA(hdc, x, y, "Edit Image", 10);
-  y += lineH + 5;
-
-  SelectObject(hdc, font);
-
-  // Brightness slider
-  SetTextColor(hdc, g_editSelection == 0 ? g_accentColor : g_textColor);
-  char bStr[32];
-  snprintf(bStr, sizeof(bStr), "Brightness: %d", g_editBrightness);
-  TextOutA(hdc, x, y, bStr, (int)strlen(bStr));
-  y += 20;
-
-  // Slider track
-  RECT trackRect = {x, y, x + sliderW, y + sliderH};
-  HBRUSH trackBrush = CreateSolidBrush(RGB(60, 60, 65));
-  FillRect(hdc, &trackRect, trackBrush);
-  DeleteObject(trackBrush);
-
-  // Slider fill (brightness: -100 to 100 maps to 0-200)
-  int bFill = (g_editBrightness + 100) * sliderW / 200;
-  RECT fillRect = {x, y, x + bFill, y + sliderH};
-  HBRUSH fillBrush = CreateSolidBrush(g_accentColor);
-  FillRect(hdc, &fillRect, fillBrush);
-  DeleteObject(fillBrush);
-  y += lineH;
-
-  // Contrast slider
-  SetTextColor(hdc, g_editSelection == 1 ? g_accentColor : g_textColor);
-  char cStr[32];
-  snprintf(cStr, sizeof(cStr), "Contrast: %.1f", g_editContrast);
-  TextOutA(hdc, x, y, cStr, (int)strlen(cStr));
-  y += 20;
-
-  trackRect.top = y;
-  trackRect.bottom = y + sliderH;
-  trackBrush = CreateSolidBrush(RGB(60, 60, 65));
-  FillRect(hdc, &trackRect, trackBrush);
-  DeleteObject(trackBrush);
-
-  int cFill = (int)((g_editContrast - 0.5f) * sliderW / 1.5f);
-  fillRect.left = x;
-  fillRect.right = x + cFill;
-  fillRect.top = y;
-  fillRect.bottom = y + sliderH;
-  fillBrush = CreateSolidBrush(g_accentColor);
-  FillRect(hdc, &fillRect, fillBrush);
-  DeleteObject(fillBrush);
-  y += lineH;
-
-  // Saturation slider
-  SetTextColor(hdc, g_editSelection == 2 ? g_accentColor : g_textColor);
-  char sStr[32];
-  snprintf(sStr, sizeof(sStr), "Saturation: %.1f", g_editSaturation);
-  TextOutA(hdc, x, y, sStr, (int)strlen(sStr));
-  y += 20;
-
-  trackRect.top = y;
-  trackRect.bottom = y + sliderH;
-  trackBrush = CreateSolidBrush(RGB(60, 60, 65));
-  FillRect(hdc, &trackRect, trackBrush);
-  DeleteObject(trackBrush);
-
-  int sFill = (int)(g_editSaturation * sliderW / 2.0f);
-  fillRect.left = x;
-  fillRect.right = x + sFill;
-  fillRect.top = y;
-  fillRect.bottom = y + sliderH;
-  fillBrush = CreateSolidBrush(g_accentColor);
-  FillRect(hdc, &fillRect, fillBrush);
-  DeleteObject(fillBrush);
-  y += lineH + 10;
-
-  // Instructions
-  SetTextColor(hdc, RGB(140, 140, 145));
-  TextOutA(hdc, x, y, "Up/Down: Select", 15);
-  y += 18;
-  TextOutA(hdc, x, y, "Left/Right: Adjust", 18);
-  y += 18;
-  TextOutA(hdc, x, y, "Enter: Apply | Esc: Cancel", 25);
-
-  SelectObject(hdc, oldFont);
-  DeleteObject(font);
-  DeleteObject(boldFont);
-}
+// Draw functions are now in ui.c
 
 void ApplyEdits(HWND hwnd) {
   if (!g_image.pixels)
@@ -1088,12 +767,68 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       int scaledWidth = (int)(g_image.width * g_renderer.scale);
       int scaledHeight = (int)(g_image.height * g_renderer.scale);
 
-      SetStretchBltMode(memDC, HALFTONE);
-      SetBrushOrgEx(memDC, 0, 0, NULL);
+      // use nearest-neighbor when zoomed in (sharp pixels)
+      // use halftone when zoomed out (smooth downscaling)
+      if (g_renderer.scale >= 1.0f) {
+        SetStretchBltMode(memDC, COLORONCOLOR);
+      } else {
+        SetStretchBltMode(memDC, HALFTONE);
+        SetBrushOrgEx(memDC, 0, 0, NULL);
+      }
 
       StretchBlt(memDC, g_renderer.offsetX, g_renderer.offsetY, scaledWidth,
                  scaledHeight, g_renderer.hMemDC, 0, 0, g_image.width,
                  g_image.height, SRCCOPY);
+
+      // Draw selection rectangle if in crop mode
+      if (g_selectMode) {
+        // Convert image coords to screen coords
+        int selX =
+            g_renderer.offsetX + (int)(g_selection.left * g_renderer.scale);
+        int selY =
+            g_renderer.offsetY + (int)(g_selection.top * g_renderer.scale);
+        int selW =
+            (int)((g_selection.right - g_selection.left) * g_renderer.scale);
+        int selH =
+            (int)((g_selection.bottom - g_selection.top) * g_renderer.scale);
+
+        // Dim area outside selection
+        HBRUSH dimBrush = CreateSolidBrush(RGB(0, 0, 0));
+        RECT topDim = {g_renderer.offsetX, g_renderer.offsetY,
+                       g_renderer.offsetX + scaledWidth, selY};
+        RECT bottomDim = {g_renderer.offsetX, selY + selH,
+                          g_renderer.offsetX + scaledWidth,
+                          g_renderer.offsetY + scaledHeight};
+        RECT leftDim = {g_renderer.offsetX, selY, selX, selY + selH};
+        RECT rightDim = {selX + selW, selY, g_renderer.offsetX + scaledWidth,
+                         selY + selH};
+        // Draw with 50% transparency effect via pattern
+        SetBkColor(memDC, RGB(0, 0, 0));
+        FillRect(memDC, &topDim, dimBrush);
+        FillRect(memDC, &bottomDim, dimBrush);
+        FillRect(memDC, &leftDim, dimBrush);
+        FillRect(memDC, &rightDim, dimBrush);
+        DeleteObject(dimBrush);
+
+        // Draw selection border
+        HPEN selPen = CreatePen(PS_DASH, 2, RGB(255, 255, 255));
+        HPEN oldPen = SelectObject(memDC, selPen);
+        HBRUSH oldBrush = SelectObject(memDC, GetStockObject(NULL_BRUSH));
+        Rectangle(memDC, selX, selY, selX + selW, selY + selH);
+        SelectObject(memDC, oldBrush);
+        SelectObject(memDC, oldPen);
+        DeleteObject(selPen);
+
+        // Draw crop size text
+        char cropText[64];
+        snprintf(cropText, sizeof(cropText),
+                 "Crop: %ldx%ld  (C to crop, ESC to cancel)",
+                 g_selection.right - g_selection.left,
+                 g_selection.bottom - g_selection.top);
+        SetBkMode(memDC, TRANSPARENT);
+        SetTextColor(memDC, RGB(255, 255, 255));
+        TextOutA(memDC, selX + 5, selY + 5, cropText, (int)strlen(cropText));
+      }
     } else {
       // No image - draw help text
       SetBkMode(memDC, TRANSPARENT);
@@ -1111,6 +846,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
     // Draw slideshow progress bar at top
     DrawSlideshowProgress(memDC, &clientRect);
 
+    // Draw zoom percentage overlay
+    DrawZoomOverlay(memDC, &clientRect);
+
     // Draw slideshow indicator to buffer
     if (g_slideshowActive) {
       SetBkMode(memDC, TRANSPARENT);
@@ -1125,11 +863,19 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       DeleteObject(font);
     }
 
-    // Draw status bar
-    DrawStatusBar(memDC, &clientRect);
+    // Draw status bar (hide in fullscreen for cleaner look)
+    if (!g_fullscreen) {
+      DrawStatusBar(memDC, &clientRect);
+    }
 
     // Draw edit panel
     DrawEditPanel(memDC, &clientRect);
+
+    // Draw help overlay (on top of everything)
+    DrawHelpOverlay(memDC, &clientRect);
+
+    // Draw settings overlay
+    DrawSettingsOverlay(memDC, &clientRect);
 
     // Draw thumbnail strip at bottom
     DrawThumbnailStrip(hwnd, memDC, &clientRect);
@@ -1191,11 +937,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
 
     case 'I': // Toggle info panel
       g_showInfo = !g_showInfo;
-      InvalidateRect(hwnd, NULL, TRUE);
-      break;
-
-    case 'T': // Toggle theme
-      ToggleTheme();
       InvalidateRect(hwnd, NULL, TRUE);
       break;
 
@@ -1343,14 +1084,48 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       break;
     }
 
-    case 'C': // Copy to clipboard (with Ctrl)
+    case 'C': // Copy (Ctrl+C) or Crop (Shift+C or just C)
       if (GetKeyState(VK_CONTROL) & 0x8000) {
         CopyImageToClipboard(hwnd);
+      } else if (GetKeyState(VK_SHIFT) & 0x8000) {
+        // Shift+C = Toggle selection mode
+        g_selectMode = !g_selectMode;
+        if (g_selectMode && g_image.pixels) {
+          // Initialize selection to center 50% of image
+          int imgW = g_image.width;
+          int imgH = g_image.height;
+          g_selection.left = imgW / 4;
+          g_selection.top = imgH / 4;
+          g_selection.right = imgW * 3 / 4;
+          g_selection.bottom = imgH * 3 / 4;
+        }
+        InvalidateRect(hwnd, NULL, TRUE);
+      } else if (g_selectMode && g_image.pixels) {
+        // C = Crop to selection
+        int cropX = g_selection.left;
+        int cropY = g_selection.top;
+        int cropW = g_selection.right - g_selection.left;
+        int cropH = g_selection.bottom - g_selection.top;
+        if (cropW > 0 && cropH > 0) {
+          ImageLoader_SaveUndo(&g_image);
+          ImageLoader_Crop(&g_image, cropX, cropY, cropW, cropH);
+          HDC hdc = GetDC(hwnd);
+          Renderer_Cleanup(&g_renderer);
+          Renderer_CreateBitmap(&g_renderer, hdc, &g_image);
+          RECT clientRect;
+          GetClientRect(hwnd, &clientRect);
+          Renderer_FitToWindow(&g_renderer, &clientRect, &g_image);
+          ReleaseDC(hwnd, hdc);
+          UpdateWindowTitle(hwnd);
+          g_selectMode = FALSE;
+          InvalidateRect(hwnd, NULL, TRUE);
+        }
       }
       break;
 
-    case 'Z': { // Undo (with Ctrl)
+    case 'Z': { // Undo (with Ctrl) or toggle zoom overlay
       if (GetKeyState(VK_CONTROL) & 0x8000) {
+        // Ctrl+Z = Undo
         if (g_image.pixels && ImageLoader_Undo(&g_image)) {
           // Recreate bitmap with restored state
           HDC hdc = GetDC(hwnd);
@@ -1363,6 +1138,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
           UpdateWindowTitle(hwnd);
           InvalidateRect(hwnd, NULL, TRUE);
         }
+      } else {
+        // Z alone = toggle zoom overlay
+        g_showZoom = !g_showZoom;
+        InvalidateRect(hwnd, NULL, TRUE);
       }
       break;
     }
@@ -1371,12 +1150,71 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       DeleteCurrentImage(hwnd);
       break;
 
-    case 'W': // Set as wallpaper
-      SetAsWallpaper();
+    case VK_OEM_2: // ? key (/ with shift) or / without - toggle help
+      if (GetKeyState(VK_SHIFT) & 0x8000) {
+        g_showHelp = !g_showHelp;
+        InvalidateRect(hwnd, NULL, TRUE);
+      }
       break;
 
-    case 'P': // Print image
-      PrintImage(hwnd);
+    case VK_F1: // F1 also toggles help
+      g_showHelp = !g_showHelp;
+      InvalidateRect(hwnd, NULL, TRUE);
+      break;
+
+    case VK_F2: // F2 opens settings panel
+      g_showSettings = !g_showSettings;
+      InvalidateRect(hwnd, NULL, TRUE);
+      break;
+
+    case 'M': // Cycle max image size (when settings panel is open)
+      if (g_showSettings) {
+        Settings_CycleMaxSize(&g_settings);
+        InvalidateRect(hwnd, NULL, TRUE);
+      }
+      break;
+
+    case 'W': // Toggle warnings OR Set as wallpaper
+      if (g_showSettings) {
+        // When settings panel is open, toggle warnings
+        g_settings.showWarnings = !g_settings.showWarnings;
+        Settings_Save(&g_settings);
+        InvalidateRect(hwnd, NULL, TRUE);
+      } else {
+        // Otherwise set as wallpaper
+        SetAsWallpaper();
+      }
+      break;
+
+    case 'T': // Toggle theme OR cycle CPU threads
+      if (g_showSettings) {
+        // When settings panel is open, cycle threads
+        Settings_CycleThreads(&g_settings);
+        InvalidateRect(hwnd, NULL, TRUE);
+      } else {
+        // Otherwise toggle theme
+        ToggleTheme();
+        InvalidateRect(hwnd, NULL, TRUE);
+      }
+      break;
+
+    case 'P': // Print image OR Reset (with Shift)
+      if (GetKeyState(VK_SHIFT) & 0x8000) {
+        // Shift+P = Reset to original (reloads from disk)
+        if (g_image.pixels && ImageLoader_Reset(&g_image)) {
+          HDC hdc = GetDC(hwnd);
+          Renderer_Cleanup(&g_renderer);
+          Renderer_CreateBitmap(&g_renderer, hdc, &g_image);
+          RECT clientRect;
+          GetClientRect(hwnd, &clientRect);
+          Renderer_FitToWindow(&g_renderer, &clientRect, &g_image);
+          ReleaseDC(hwnd, hdc);
+          UpdateWindowTitle(hwnd);
+          InvalidateRect(hwnd, NULL, TRUE);
+        }
+      } else {
+        PrintImage(hwnd);
+      }
       break;
 
     case 'S': // Toggle slideshow OR Save (with Ctrl)
@@ -1465,6 +1303,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       }
       break;
 
+    case 'Q': // Upscale 2x using Lanczos (high quality)
+      if (g_image.pixels) {
+        int newW = g_image.width * 2;
+        int newH = g_image.height * 2;
+        // use settings for max size limit (supports up to 32K)
+        if (newW <= g_settings.maxImageSize &&
+            newH <= g_settings.maxImageSize) {
+          // warn if operation will use lots of memory
+          size_t memNeeded = Settings_EstimateMemory(newW, newH);
+          if (Settings_WarnIfLarge(hwnd, memNeeded)) {
+            ImageLoader_ResizeLanczos(&g_image, newW, newH);
+            HDC hdc = GetDC(hwnd);
+            Renderer_Cleanup(&g_renderer);
+            Renderer_CreateBitmap(&g_renderer, hdc, &g_image);
+            RECT clientRect;
+            GetClientRect(hwnd, &clientRect);
+            Renderer_FitToWindow(&g_renderer, &clientRect, &g_image);
+            ReleaseDC(hwnd, hdc);
+            UpdateWindowTitle(hwnd);
+            InvalidateRect(hwnd, NULL, TRUE);
+          }
+        }
+      }
+      break;
+
     case 'K': // Grayscale
       if (g_image.pixels) {
         ImageLoader_Grayscale(&g_image);
@@ -1476,8 +1339,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
       }
       break;
 
-    case VK_ESCAPE: // Close edit panel, exit fullscreen, or quit
-      if (g_showEditPanel) {
+    case VK_ESCAPE: // Close panels, exit fullscreen, or quit
+      if (g_selectMode) {
+        g_selectMode = FALSE;
+        InvalidateRect(hwnd, NULL, TRUE);
+      } else if (g_showSettings) {
+        g_showSettings = FALSE;
+        InvalidateRect(hwnd, NULL, TRUE);
+      } else if (g_showHelp) {
+        g_showHelp = FALSE;
+        InvalidateRect(hwnd, NULL, TRUE);
+      } else if (g_showEditPanel) {
         g_showEditPanel = FALSE;
         g_editBrightness = 0;
         g_editContrast = 1.0f;
@@ -1490,6 +1362,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
         ToggleFullscreen(hwnd);
       } else {
         PostQuitMessage(0);
+      }
+      break;
+
+    case VK_F11: // Toggle fullscreen
+    case 'F':    // F also toggles fullscreen
+      ToggleFullscreen(hwnd);
+      if (g_image.pixels) {
+        RECT clientRect;
+        GetClientRect(hwnd, &clientRect);
+        Renderer_FitToWindow(&g_renderer, &clientRect, &g_image);
+        InvalidateRect(hwnd, NULL, TRUE);
       }
       break;
 
@@ -1594,11 +1477,30 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
   }
 
   case WM_LBUTTONDOWN: {
-    // Start panning
-    if (g_image.pixels) {
+    int mouseX = GET_X_LPARAM(lParam);
+    int mouseY = GET_Y_LPARAM(lParam);
+
+    if (g_selectMode && g_image.pixels) {
+      // Selection mode - start drawing selection
+      int imgX = (int)((mouseX - g_renderer.offsetX) / g_renderer.scale);
+      int imgY = (int)((mouseY - g_renderer.offsetY) / g_renderer.scale);
+
+      if (imgX >= 0 && imgX < g_image.width && imgY >= 0 &&
+          imgY < g_image.height) {
+        g_selectDragging = TRUE;
+        g_selectDragX = imgX;
+        g_selectDragY = imgY;
+        g_selection.left = imgX;
+        g_selection.top = imgY;
+        g_selection.right = imgX;
+        g_selection.bottom = imgY;
+        SetCapture(hwnd);
+      }
+    } else if (g_image.pixels) {
+      // Normal mode - start panning
       g_isPanning = TRUE;
-      g_panStartX = GET_X_LPARAM(lParam);
-      g_panStartY = GET_Y_LPARAM(lParam);
+      g_panStartX = mouseX;
+      g_panStartY = mouseY;
       g_offsetStartX = g_renderer.offsetX;
       g_offsetStartY = g_renderer.offsetY;
       SetCapture(hwnd);
@@ -1608,8 +1510,23 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
   }
 
   case WM_LBUTTONUP: {
-    // Stop panning
-    if (g_isPanning) {
+    if (g_selectDragging) {
+      // Stop selection
+      g_selectDragging = FALSE;
+      ReleaseCapture();
+
+      // Ensure minimum selection size
+      int w = g_selection.right - g_selection.left;
+      int h = g_selection.bottom - g_selection.top;
+      if (w < 10 || h < 10) {
+        g_selection.left = g_image.width / 4;
+        g_selection.top = g_image.height / 4;
+        g_selection.right = g_image.width * 3 / 4;
+        g_selection.bottom = g_image.height * 3 / 4;
+      }
+      InvalidateRect(hwnd, NULL, FALSE);
+    } else if (g_isPanning) {
+      // Stop panning
       g_isPanning = FALSE;
       ReleaseCapture();
       SetCursor(LoadCursor(NULL, IDC_ARROW));
@@ -1618,10 +1535,35 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam,
   }
 
   case WM_MOUSEMOVE: {
-    // Pan image while dragging
-    if (g_isPanning && g_image.pixels) {
-      int dx = GET_X_LPARAM(lParam) - g_panStartX;
-      int dy = GET_Y_LPARAM(lParam) - g_panStartY;
+    int mouseX = GET_X_LPARAM(lParam);
+    int mouseY = GET_Y_LPARAM(lParam);
+
+    if (g_selectDragging && g_selectMode) {
+      // Selection mode - update selection rectangle
+      int imgX = (int)((mouseX - g_renderer.offsetX) / g_renderer.scale);
+      int imgY = (int)((mouseY - g_renderer.offsetY) / g_renderer.scale);
+
+      // Clamp to image bounds
+      if (imgX < 0)
+        imgX = 0;
+      if (imgY < 0)
+        imgY = 0;
+      if (imgX > g_image.width)
+        imgX = g_image.width;
+      if (imgY > g_image.height)
+        imgY = g_image.height;
+
+      // Handle drag in any direction
+      g_selection.left = (imgX < g_selectDragX) ? imgX : g_selectDragX;
+      g_selection.right = (imgX > g_selectDragX) ? imgX : g_selectDragX;
+      g_selection.top = (imgY < g_selectDragY) ? imgY : g_selectDragY;
+      g_selection.bottom = (imgY > g_selectDragY) ? imgY : g_selectDragY;
+
+      InvalidateRect(hwnd, NULL, FALSE);
+    } else if (g_isPanning && g_image.pixels) {
+      // Normal mode - pan image
+      int dx = mouseX - g_panStartX;
+      int dy = mouseY - g_panStartY;
       g_renderer.offsetX = g_offsetStartX + dx;
       g_renderer.offsetY = g_offsetStartY + dy;
       g_renderer.fitToWindow = FALSE;
